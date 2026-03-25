@@ -22,7 +22,7 @@ dependencies = [
   "optax>=0.2.2",
   "phate>=2.0.0",
   "umap-learn>=0.5.11",
-  "plotly>=6.6.0",
+  "plotly==5.24.1",
   "modal>=0.64",
   "huggingface_hub>=0.20.0",
 ]
