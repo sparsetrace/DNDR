@@ -53,9 +53,6 @@ def plot_dmap_spectra_overlay(
     plt.ylabel(r"$|L_{nj}|$" if use_abs else r"$L_{nj}$")
     plt.legend()
     plt.tight_layout()
-    plt.show()
-
-    axes[-1].set_xlabel(r"DMAP eigenvalue $1-\lambda_n$")
-    plt.tight_layout()
+    plt.savefig("spectra.png", dpi=300, bbox_inches="tight")
     plt.show()
     return None
