@@ -9,9 +9,9 @@ from typing import Optional, Dict, Any
 from scipy.spatial.distance import cdist
 import plotly.graph_objects as go
 
-from berry_sec_py.del0 import del0
-from berry_sec_py.del1 import del1
-from berry_sec_py.del1as import del1as
+from .del0 import del0
+from .del1 import del1
+from .del1as import del1as
 
 
 # ----------------------------
