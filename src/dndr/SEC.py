@@ -158,46 +158,111 @@ class SEC:
         )
 
     def _build_sec_operators(self):
+        """
+        Build dense SEC operators G and E from operator actions on JxJ coefficient
+        matrices A, using the identities
+    
+            G(A) = 1/2 * ( C_0(A) Λ + C_0(A Λ) - C_1(A) )
+    
+        and
+    
+            4 E(A) =
+                Λ(F_1(A)-H_1(A)) + (F_1(A)-H_1(A))Λ
+              + F_1(ΛA + AΛ) - H_1(ΛA + AΛ)
+              + C_1(A)Λ + C_1(AΛ) - Λ C_1(A) - C_1(ΛA)
+              + C_2(A) + H_2(A) - F_2(A).
+    
+        This is dense and meant for small J (e.g. torus demo). It is much less
+        error-prone than hand-coding the 4-index contractions.
+        """
         J = self.n_eigs_sec
-        K = self.n_eigs_dmap
-        lam_f = self.lam_sec_
-
-        G4 = np.zeros((J, J, J, J), dtype=float)
-        E4 = np.zeros((J, J, J, J), dtype=float)
-
-        for s in range(K):
-            cs = self.c_all_[:, :, s]  # J x J
-            lam_s = self.lam_[s]
-
-            # G_{nmkl} = <phi_n dphi_m, phi_k dphi_l>
-            G4 += 0.5 * (
-                lam_f[None, :, None, None] + lam_f[None, None, None, :] - lam_s
-            ) * np.einsum("nm,kl->nmkl", cs, cs, optimize=True) #np.einsum("nk,ml->nmkl", cs, cs, optimize=True)
-
-            term1 = np.einsum("ik,jl->ijkl", cs, cs, optimize=True)
-            term2 = np.einsum("il,jk->ijkl", cs, cs, optimize=True)
-            term3 = np.einsum("ij,kl->ijkl", cs, cs, optimize=True)
-
-            E4 += 0.25 * (
-                (lam_f[:, None, None, None] + lam_f[None, None, :, None] - lam_s)
-                * (lam_f[None, :, None, None] + lam_f[None, None, None, :] - lam_s)
-                * term1
-                - (lam_f[:, None, None, None] + lam_f[None, None, None, :] - lam_s)
-                * (lam_f[None, :, None, None] + lam_f[None, None, :, None] - lam_s)
-                * term2
-                + (lam_f[:, None, None, None] - lam_f[None, :, None, None] - lam_s)
-                * (lam_f[None, None, :, None] - lam_f[None, None, None, :] - lam_s)
-                * term3
-            )
-
         F = J * J
-        G = G4.reshape(F, F)
-        E = E4.reshape(F, F)
+    
+        # c[n,m,s] = <phi_n phi_m, phi_s>
+        # first two indices live in the SEC frame (size J),
+        # last index runs over all retained scalar DMAP modes.
+        c = self.c_all_
+        lam_all = self.lam_
+        lam_sec = self.lam_sec_
+        Lam = np.diag(lam_sec)
+    
+        def C_p(A, p):
+            """
+            [C_p(A)]_{nm} = sum_{k,l} c^p_{nmkl} A_{kl},
+            where c^p_{nmkl} = sum_s lam_s^p c_{nms} c_{kls}.
+            """
+            # sigma[s] = sum_{k,l} c[k,l,s] A[k,l]
+            sigma = np.einsum("kls,kl->s", c, A, optimize=True)
+            # result[n,m] = sum_s lam_s^p c[n,m,s] sigma[s]
+            return np.einsum("s,nms->nm", (lam_all ** p) * sigma, c, optimize=True)
+    
+        def H_p(A, p):
+            """
+            [H_p(A)]_{nm} = sum_{k,l} c^p_{nkml} A_{kl}
+                          = sum_{k,l,s} lam_s^p c[n,k,s] c[m,l,s] A[k,l].
+            """
+            return np.einsum("nks,mls,kl,s->nm", c, c, A, lam_all ** p, optimize=True)
+    
+        def F_p(A, p):
+            """
+            [F_p(A)]_{nm} = sum_{k,l} c^p_{nlmk} A_{kl}
+                          = sum_{k,l,s} lam_s^p c[n,l,s] c[m,k,s] A[k,l].
+            """
+            return np.einsum("nls,mks,kl,s->nm", c, c, A, lam_all ** p, optimize=True)
+    
+        def G_apply(A):
+            # G(A) = 1/2 * ( C_0(A) Λ + C_0(AΛ) - C_1(A) )
+            return 0.5 * (C_p(A, 0) @ Lam + C_p(A @ Lam, 0) - C_p(A, 1))
+    
+        def E_apply(A):
+            LA = Lam @ A
+            AL = A @ Lam
+    
+            F1A = F_p(A, 1)
+            H1A = H_p(A, 1)
+            C1A = C_p(A, 1)
+    
+            out = (
+                Lam @ (F1A - H1A)
+                + (F1A - H1A) @ Lam
+                + F_p(LA + AL, 1)
+                - H_p(LA + AL, 1)
+                + C1A @ Lam
+                + C_p(AL, 1)
+                - Lam @ C1A
+                - C_p(LA, 1)
+                + C_p(A, 2)
+                + H_p(A, 2)
+                - F_p(A, 2)
+            )
+            return 0.25 * out
+    
+        # Build dense matrix representations on the flattened JxJ coefficient space.
+        G = np.zeros((F, F), dtype=float)
+        E = np.zeros((F, F), dtype=float)
+    
+        for col in range(F):
+            A = np.zeros((J, J), dtype=float)
+            k, l = divmod(col, J)
+            A[k, l] = 1.0
+    
+            GA = G_apply(A)
+            EA = E_apply(A)
+    
+            G[:, col] = GA.reshape(-1)
+            E[:, col] = EA.reshape(-1)
+    
+        # Symmetrize to reduce numerical asymmetry.
         self.G_ = 0.5 * (G + G.T)
         self.E_ = 0.5 * (E + E.T)
-        self.G4_ = G4
-        self.E4_ = E4
-
+    
+        # Optional: keep operator handles around for debugging.
+        self._C_p = C_p
+        self._H_p = H_p
+        self._F_p = F_p
+        self._G_apply = G_apply
+        self._E_apply = E_apply
+    
     def _solve_sec(self):
         sob = 0.5 * ((self.E_ + self.G_) + (self.E_ + self.G_).T)
         s_eval, s_vec = eigh(sob)
