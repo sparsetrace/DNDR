@@ -172,7 +172,7 @@ class SEC:
             # G_{nmkl} = <phi_n dphi_m, phi_k dphi_l>
             G4 += 0.5 * (
                 lam_f[None, :, None, None] + lam_f[None, None, None, :] - lam_s
-            ) * np.einsum("nk,ml->nmkl", cs, cs, optimize=True)
+            ) * np.einsum("nm,kl->nmkl", cs, cs, optimize=True) #np.einsum("nk,ml->nmkl", cs, cs, optimize=True)
 
             term1 = np.einsum("ik,jl->ijkl", cs, cs, optimize=True)
             term2 = np.einsum("il,jk->ijkl", cs, cs, optimize=True)
