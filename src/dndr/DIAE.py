@@ -3,7 +3,13 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from typing import Any, Dict, Optional, Tuple, Union
-import optax
+
+try:
+    import optax
+except Exception:
+    import sys, subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "optax>=0.2.2"])
+    import optax
 
 
 class DIAE:
@@ -35,8 +41,11 @@ class DIAE:
     training_sch : dict, optional
         Training schedule / hyperparameters. Supported keys:
             n_iter, learning_rate, batch_size, seed, verbose_every,
-            t, steps, eta, init_scale, use_bias, train_x_t
-        where train_x_t is one of {'fixed_noise', 'zeros'} or an explicit array.
+            t, steps, eta, init_scale, use_bias, train_x_t,
+            lr_schedule, warmup_frac, end_value
+        where:
+            lr_schedule is one of {'constant', 'cosine', 'warmup_cosine'}
+            train_x_t is one of {'fixed_noise', 'zeros'} or an explicit array
     training : bool, default=True
         If True, train inside __init__.
 
@@ -99,14 +108,49 @@ class DIAE:
 
         # Initialize linear maps.
         self.params = self._init_params(scale=float(self.sch["init_scale"]))
-        self.tx = optax.adam(float(self.sch["learning_rate"]))
+
+        # Optimizer + schedule
+        n_iter = int(self.sch["n_iter"])
+        base_lr = float(self.sch["learning_rate"])
+        lr_schedule_name = str(self.sch.get("lr_schedule", "constant")).lower()
+        end_value = float(self.sch.get("end_value", 0.0))
+
+        if lr_schedule_name == "constant":
+            lr_schedule = base_lr
+
+        elif lr_schedule_name == "cosine":
+            lr_schedule = optax.cosine_decay_schedule(
+                init_value=base_lr,
+                decay_steps=n_iter,
+                alpha=end_value / max(base_lr, 1e-12),
+            )
+
+        elif lr_schedule_name == "warmup_cosine":
+            warmup_frac = float(self.sch.get("warmup_frac", 0.05))
+            warmup_steps = max(1, int(warmup_frac * n_iter))
+            lr_schedule = optax.warmup_cosine_decay_schedule(
+                init_value=0.0,
+                peak_value=base_lr,
+                warmup_steps=warmup_steps,
+                decay_steps=n_iter,
+                end_value=end_value,
+            )
+
+        else:
+            raise ValueError(
+                "training_sch['lr_schedule'] must be one of "
+                "{'constant', 'cosine', 'warmup_cosine'}"
+            )
+
+        self.lr_schedule = lr_schedule
+        self.tx = optax.adam(self.lr_schedule)
         self.opt_state = self.tx.init(self.params)
 
         # Build compiled train step.
         self._train_step_jit = self._make_train_step()
 
         if self.training:
-            self.fit(n_iter=int(self.sch["n_iter"]))
+            self.fit(n_iter=n_iter)
 
     # ------------------------------------------------------------------
     # configuration
@@ -133,6 +177,11 @@ class DIAE:
             "init_scale": 0.05,
             "use_bias": False,
             "train_x_t": "fixed_noise",  # {'fixed_noise', 'zeros'} or explicit array
+
+            # learning-rate schedule options
+            "lr_schedule": "constant",   # {'constant', 'cosine', 'warmup_cosine'}
+            "warmup_frac": 0.05,         # used only for warmup_cosine
+            "end_value": 0.0,            # final lr for cosine / warmup_cosine
         }
         if training_sch is not None:
             defaults.update(training_sch)
@@ -351,9 +400,15 @@ class DIAE:
             )
 
             if verbose_every and (it % verbose_every == 0 or it == n_iter - 1):
+                if callable(self.lr_schedule):
+                    lr_now = float(self.lr_schedule(it))
+                else:
+                    lr_now = float(self.lr_schedule)
+
                 print(
                     f"iter {it:6d}  loss {float(loss):.6f}  "
-                    f"ambient {float(aux['ambient_loss']):.6f}",
+                    f"ambient {float(aux['ambient_loss']):.6f}  "
+                    f"lr {lr_now:.6e}",
                     end="\r",
                 )
 
